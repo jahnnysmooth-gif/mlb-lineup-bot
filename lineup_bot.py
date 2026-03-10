@@ -13,33 +13,34 @@ LINEUPS_URL = "https://www.rotowire.com/baseball/daily-lineups.php"
 ET = ZoneInfo("America/New_York")
 
 VALID_TEAMS = {
-    "ARI", "ATL", "BAL", "BOS", "CHC", "CWS", "CIN", "CLE", "COL", "DET",
-    "HOU", "KC", "LAA", "LAD", "MIA", "MIL", "MIN", "NYM", "NYY", "ATH",
-    "PHI", "PIT", "SD", "SF", "SEA", "STL", "TB", "TEX", "TOR", "WSH"
+    "ARI","ATL","BAL","BOS","CHC","CWS","CIN","CLE","COL","DET",
+    "HOU","KC","LAA","LAD","MIA","MIL","MIN","NYM","NYY","ATH",
+    "PHI","PIT","SD","SF","SEA","STL","TB","TEX","TOR","WSH"
 }
 
-POSITIONS = {"C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"}
+POSITIONS = {"C","1B","2B","3B","SS","LF","CF","RF","DH"}
+
 BAD_VALUES = {
-    "RotoWire", "Alerts", "alert", "Menu", "Confirmed Lineup",
-    "L", "R", "S", "ERA", "MLB", "Baseball"
+    "RotoWire","Alerts","alert","Menu","Confirmed Lineup",
+    "L","R","S","ERA","MLB","Baseball"
 }
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
+        with open(STATE_FILE,"r") as f:
             return json.load(f)
     return {}
 
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+    with open(STATE_FILE,"w") as f:
+        json.dump(state,f,indent=2)
 
 
 def fetch_page():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(LINEUPS_URL, headers=headers, timeout=30)
+    headers = {"User-Agent":"Mozilla/5.0"}
+    r = requests.get(LINEUPS_URL,headers=headers,timeout=30)
     r.raise_for_status()
     return r.text
 
@@ -49,20 +50,23 @@ def clean(text):
 
 
 def get_lines(html):
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html,"html.parser")
     lines = [clean(x) for x in soup.get_text("\n").splitlines()]
     return [x for x in lines if x]
 
 
-def extract_lineup_after_confirmed(lines, start_idx):
-    lineup = []
-    i = start_idx + 1
+def extract_lineup(lines,start_idx):
+
+    lineup=[]
+    i=start_idx+1
 
     while i < len(lines) and len(lineup) < 9:
+
         token = lines[i]
 
-        if token in POSITIONS and i + 1 < len(lines):
-            player = lines[i + 1]
+        if token in POSITIONS and i+1 < len(lines):
+
+            player = lines[i+1]
 
             if (
                 player
@@ -72,7 +76,11 @@ def extract_lineup_after_confirmed(lines, start_idx):
                 and "ERA" not in player
                 and player not in VALID_TEAMS
             ):
-                lineup.append({"name": player, "pos": token})
+                lineup.append({
+                    "name":player,
+                    "pos":token
+                })
+
                 i += 2
                 continue
 
@@ -81,78 +89,128 @@ def extract_lineup_after_confirmed(lines, start_idx):
     return lineup
 
 
+def find_pitcher(lines,start_idx):
+
+    window = lines[max(0,start_idx-25):start_idx]
+
+    for text in reversed(window):
+
+        if (
+            text not in BAD_VALUES
+            and text not in VALID_TEAMS
+            and "ERA" not in text
+            and len(text.split()) >= 2
+            and len(text.split()) <= 4
+        ):
+            return text
+
+    return None
+
+
 def parse_lineups(lines):
-    confirmed_indexes = [i for i, line in enumerate(lines) if line == "Confirmed Lineup"]
-    parsed = []
+
+    confirmed_indexes=[i for i,x in enumerate(lines) if x=="Confirmed Lineup"]
+
+    parsed=[]
 
     for idx in confirmed_indexes:
-        window_before = lines[max(0, idx - 40):idx]
 
-        teams_in_window = [x for x in window_before if x in VALID_TEAMS]
-        if not teams_in_window:
+        window_before = lines[max(0,idx-40):idx]
+
+        teams=[x for x in window_before if x in VALID_TEAMS]
+
+        if not teams:
             continue
 
-        team = teams_in_window[-1]
-        lineup = extract_lineup_after_confirmed(lines, idx)
+        team=teams[-1]
 
-        if len(lineup) == 9:
-            parsed.append({
-                "team": team,
-                "lineup": lineup
-            })
+        lineup = extract_lineup(lines,idx)
 
-    deduped = {}
+        if len(lineup)!=9:
+            continue
+
+        pitcher = find_pitcher(lines,idx)
+
+        parsed.append({
+            "team":team,
+            "lineup":lineup,
+            "pitcher":pitcher
+        })
+
+    deduped={}
     for item in parsed:
-        deduped[item["team"]] = item
+        deduped[item["team"]]=item
 
     return list(deduped.values())
 
 
 def format_roundup_message(new_items):
-    lines = []
+
+    lines=[]
+
     lines.append("📋 **STARTING LINEUPS UPDATE**")
     lines.append("")
 
-    for item in sorted(new_items, key=lambda x: x["team"]):
-        team = item["team"]
-        lineup = item["lineup"]
+    for item in sorted(new_items,key=lambda x:x["team"]):
+
+        team=item["team"]
+        lineup=item["lineup"]
+        pitcher=item.get("pitcher")
 
         lines.append(f"**{team}**")
-        short_line = ", ".join([player["name"] for player in lineup[:9]])
-        lines.append(short_line)
+
+        if pitcher:
+            lines.append(f"SP: {pitcher}")
+            lines.append("")
+
+        for i,player in enumerate(lineup,start=1):
+            lines.append(f"{i}. {player['name']}")
+
         lines.append("")
 
     return "\n".join(lines).strip()
 
 
 def post_to_discord(content):
-    chunks = []
 
-    while len(content) > 1900:
-        split_at = content.rfind("\n\n", 0, 1900)
-        if split_at == -1:
-            split_at = content.rfind("\n", 0, 1900)
-        if split_at == -1:
-            split_at = 1900
+    chunks=[]
+
+    while len(content)>1900:
+
+        split_at=content.rfind("\n\n",0,1900)
+
+        if split_at==-1:
+            split_at=content.rfind("\n",0,1900)
+
+        if split_at==-1:
+            split_at=1900
 
         chunks.append(content[:split_at])
-        content = content[split_at:].lstrip()
+        content=content[split_at:].lstrip()
 
     if content:
         chunks.append(content)
 
     for chunk in chunks:
-        while True:
-            r = requests.post(WEBHOOK_URL, json={"content": chunk}, timeout=20)
 
-            if r.status_code == 429:
-                retry_after = 2
+        while True:
+
+            r=requests.post(
+                WEBHOOK_URL,
+                json={"content":chunk},
+                timeout=20
+            )
+
+            if r.status_code==429:
+
+                retry_after=2
+
                 try:
-                    retry_after = float(r.json().get("retry_after", 2))
-                except Exception:
+                    retry_after=float(r.json().get("retry_after",2))
+                except:
                     pass
 
-                print(f"Rate limited. Waiting {retry_after} seconds...")
+                print(f"Rate limited. Waiting {retry_after}s")
                 time.sleep(retry_after)
                 continue
 
@@ -161,45 +219,54 @@ def post_to_discord(content):
 
 
 def main():
+
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
 
-    print("Fetching Rotowire lineups page...")
+    print("Fetching Rotowire page")
+
     html = fetch_page()
+
     lines = get_lines(html)
+
     parsed = parse_lineups(lines)
 
     print(f"Parsed {len(parsed)} valid lineups")
 
-    today_key = datetime.now(ET).strftime("%Y-%m-%d")
-    state = load_state()
+    today_key=datetime.now(ET).strftime("%Y-%m-%d")
 
-    if state.get("date") != today_key:
-        state = {"date": today_key, "posted": {}}
+    state=load_state()
 
-    posted = state.get("posted", {})
-    new_items = []
+    if state.get("date")!=today_key:
+        state={"date":today_key,"posted":{}}
+
+    posted=state.get("posted",{})
+
+    new_items=[]
 
     for item in parsed:
-        team = item["team"]
+
+        team=item["team"]
+
         if posted.get(team):
-            print(f"Skipping {team}, already posted today")
             continue
 
         new_items.append(item)
-        posted[team] = True
+        posted[team]=True
 
-    state["posted"] = posted
+    state["posted"]=posted
     save_state(state)
 
     if not new_items:
-        print("No new confirmed lineups to post.")
+        print("No new lineups")
         return
 
-    msg = format_roundup_message(new_items)
-    print(f"Posting roundup for {len(new_items)} new lineups")
+    msg=format_roundup_message(new_items)
+
+    print(f"Posting roundup for {len(new_items)} teams")
+
     post_to_discord(msg)
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
