@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,8 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 STATE_FILE = "posted_lineups.json"
 LINEUPS_URL = "https://www.rotowire.com/baseball/daily-lineups.php"
 ET = ZoneInfo("America/New_York")
+
+POSITIONS = {"C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"}
 
 
 def load_state():
@@ -34,105 +37,92 @@ def fetch_page():
     return r.text
 
 
-def clean(text):
+def clean_text(text):
     return " ".join(text.split()).strip()
 
 
-def parse_lineups(html):
-    soup = BeautifulSoup(html, "html.parser")
-    page_text = soup.get_text(" ", strip=True)
+def extract_lineups_from_text(text):
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
 
-    # Find game containers broadly
-    games = soup.find_all(["div", "section", "article"])
+    lineups = []
+    i = 0
 
-    parsed = []
-
-    for game in games:
-        text = clean(game.get_text(" ", strip=True))
-        if not text:
+    while i < len(lines):
+        if lines[i] != "Confirmed Lineup":
+            i += 1
             continue
 
-        if "Confirmed Lineup" not in text:
-            continue
+        # Walk backward to find the most recent probable pitcher line
+        # Pattern in current Rotowire page is pitcher name followed by hand / ERA, then Confirmed Lineup. :contentReference[oaicite:1]{index=1}
+        team = None
+        pitcher = None
 
-        # Try to identify team names from image alt text or visible text
-        team_names = []
-        for img in game.find_all("img", alt=True):
-            alt = clean(img.get("alt", ""))
-            if alt and alt not in team_names:
-                team_names.append(alt)
+        j = i - 1
+        while j >= 0 and i - j <= 30:
+            candidate = clean_text(lines[j])
 
-        # Fallback: scan likely headings
-        if len(team_names) < 2:
-            for tag in game.find_all(["h2", "h3", "h4", "span", "div"]):
-                t = clean(tag.get_text(" ", strip=True))
-                if "(" in t and ")" in t:
-                    continue
-                if len(t.split()) >= 1 and len(t) < 40 and t not in team_names:
-                    team_names.append(t)
+            if pitcher is None and candidate not in {"L", "R", "S"} and "ERA" not in candidate:
+                # likely pitcher name right before handedness/ERA block
+                if 2 <= len(candidate.split()) <= 4 and not re.match(r"^\d", candidate):
+                    pitcher = candidate
 
-        # Extract lineup blocks by looking for "Confirmed Lineup"
-        lines = [clean(x) for x in text.split("Confirmed Lineup")]
-        if len(lines) < 2:
-            continue
-
-        # We only want likely player/position rows
-        for idx, after in enumerate(lines[1:3]):
-            if idx >= 2:
+            # team abbreviation block appears shortly above
+            if re.fullmatch(r"[A-Z]{2,3}", candidate):
+                team = candidate
                 break
 
-            team_name = team_names[idx] if idx < len(team_names) else f"Team {idx+1}"
+            j -= 1
 
-            raw_parts = after.split()
-            lineup = []
-            pitcher = None
+        lineup = []
+        k = i + 1
 
-            # Very simple parsing heuristic:
-            # look for repeated POS markers after player names
-            positions = {"C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"}
-            i = 0
-            while i < len(raw_parts) - 1:
-                # collect name until a position token
-                j = i
-                while j < len(raw_parts) and raw_parts[j] not in positions:
-                    j += 1
+        while k < len(lines) and len(lineup) < 9:
+            pos = clean_text(lines[k])
 
-                if j < len(raw_parts) and raw_parts[j] in positions:
-                    name = " ".join(raw_parts[i:j]).strip()
-                    pos = raw_parts[j]
-                    if name and len(lineup) < 9:
+            if pos in POSITIONS:
+                if k + 1 < len(lines):
+                    name = clean_text(lines[k + 1])
+
+                    # Skip salary lines / handedness lines
+                    if (
+                        name
+                        and not name.startswith("$")
+                        and name not in {"L", "R", "S"}
+                        and "ERA" not in name
+                        and name != "Confirmed Lineup"
+                    ):
                         lineup.append({"name": name, "pos": pos})
-                    i = j + 1
-                else:
-                    break
+                        k += 2
+                        continue
 
-            # Try to detect probable SP
-            if "Lineup" in text and "ERA" in text:
-                pitcher = None
+            k += 1
 
-            if len(lineup) >= 7:
-                parsed.append({
-                    "team": team_name,
-                    "lineup": lineup[:9],
-                    "pitcher": pitcher,
-                })
+        if team and len(lineup) == 9:
+            lineups.append({
+                "team": team,
+                "pitcher": pitcher,
+                "lineup": lineup
+            })
 
-    # Deduplicate by team
+        i = k
+
+    # dedupe by team abbreviation
     deduped = {}
-    for item in parsed:
+    for item in lineups:
         deduped[item["team"]] = item
 
     return list(deduped.values())
 
 
-def format_message(team_name, lineup, pitcher=None):
+def format_message(team, lineup, pitcher=None):
     lines = []
     lines.append("📋 **LINEUP POSTED**")
     lines.append("")
-    lines.append(f"**{team_name}**")
+    lines.append(f"**{team}**")
 
-    for i, player in enumerate(lineup, start=1):
-        lines.append(f"{i}. {player['name']} — {player['pos']}")
+    for idx, player in enumerate(lineup, start=1):
+        lines.append(f"{idx}. {player['name']} — {player['pos']}")
 
     if pitcher:
         lines.append("")
@@ -176,26 +166,33 @@ def main():
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
 
+    print("Fetching Rotowire lineups page...")
     html = fetch_page()
-    lineups = parse_lineups(html)
-    state = load_state()
+    print(f"Fetched {len(html)} characters")
 
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text("\n")
+    parsed_lineups = extract_lineups_from_text(text)
+
+    print(f"Parsed {len(parsed_lineups)} lineups")
+
+    state = load_state()
     today_key = datetime.now(ET).strftime("%Y-%m-%d")
+
     if state.get("date") != today_key:
         state = {"date": today_key, "posted": {}}
 
     posted = state.get("posted", {})
-
     posted_any = False
 
-    for item in lineups:
+    for item in parsed_lineups:
         team = item["team"]
-        lineup = item["lineup"]
 
-        if team in posted:
+        if posted.get(team):
+            print(f"Skipping {team}, already posted")
             continue
 
-        msg = format_message(team, lineup, item.get("pitcher"))
+        msg = format_message(team, item["lineup"], item.get("pitcher"))
         print(f"Posting lineup for {team}")
         post_to_discord(msg)
         posted[team] = True
