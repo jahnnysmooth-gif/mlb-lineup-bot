@@ -1,7 +1,7 @@
 services:
-  - type: cron
+  - type: worker
     name: mlb-lineup-bot
     runtime: python
-    schedule: "*/5 * * * *"
+    plan: starter
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python lineup_bot.py"

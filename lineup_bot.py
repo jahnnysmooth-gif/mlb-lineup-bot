@@ -26,6 +26,72 @@ BAD_VALUES = {
     "L", "R", "S", "ERA", "MLB", "Baseball"
 }
 
+TEAM_COLORS = {
+    "ARI": 0xA71930,
+    "ATL": 0xCE1141,
+    "BAL": 0xDF4601,
+    "BOS": 0xBD3039,
+    "CHC": 0x0E3386,
+    "CWS": 0x27251F,
+    "CIN": 0xC6011F,
+    "CLE": 0xE31937,
+    "COL": 0x33006F,
+    "DET": 0x0C2340,
+    "HOU": 0xEB6E1F,
+    "KC": 0x004687,
+    "LAA": 0xBA0021,
+    "LAD": 0x005A9C,
+    "MIA": 0x00A3E0,
+    "MIL": 0x12284B,
+    "MIN": 0x002B5C,
+    "NYM": 0x002D72,
+    "NYY": 0x0C2340,
+    "ATH": 0x003831,
+    "PHI": 0xE81828,
+    "PIT": 0xFDB827,
+    "SD": 0x2F241D,
+    "SF": 0xFD5A1E,
+    "SEA": 0x005C5C,
+    "STL": 0xC41E3A,
+    "TB": 0x092C5C,
+    "TEX": 0x003278,
+    "TOR": 0x134A8E,
+    "WSH": 0xAB0003
+}
+
+TEAM_LOGOS = {
+    "ARI": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/ARI.svg",
+    "ATL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/ATL.svg",
+    "BAL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/BAL.svg",
+    "BOS": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/BOS.svg",
+    "CHC": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CHC.svg",
+    "CWS": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CWS.svg",
+    "CIN": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CIN.svg",
+    "CLE": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CLE.svg",
+    "COL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/COL.svg",
+    "DET": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/DET.svg",
+    "HOU": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/HOU.svg",
+    "KC": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/KC.svg",
+    "LAA": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/LAA.svg",
+    "LAD": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/LAD.svg",
+    "MIA": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/MIA.svg",
+    "MIL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/MIL.svg",
+    "MIN": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/MIN.svg",
+    "NYM": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/NYM.svg",
+    "NYY": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/NYY.svg",
+    "ATH": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/OAK.svg",
+    "PHI": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/PHI.svg",
+    "PIT": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/PIT.svg",
+    "SD": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/SD.svg",
+    "SF": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/SF.svg",
+    "SEA": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/SEA.svg",
+    "STL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/STL.svg",
+    "TB": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/TB.svg",
+    "TEX": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/TEX.svg",
+    "TOR": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/TOR.svg",
+    "WSH": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/WSH.svg"
+}
+
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -109,19 +175,35 @@ def find_pitcher(lines, start_idx):
     return None
 
 
+def get_last_two_distinct_teams(window_before):
+    found = [x for x in window_before if x in VALID_TEAMS]
+    distinct = []
+
+    for team in found:
+        if not distinct or distinct[-1] != team:
+            distinct.append(team)
+
+    if len(distinct) >= 2:
+        return distinct[-2], distinct[-1]
+
+    if len(distinct) == 1:
+        return distinct[0], None
+
+    return None, None
+
+
 def parse_lineups(lines):
     confirmed_indexes = [i for i, x in enumerate(lines) if x == "Confirmed Lineup"]
-
     parsed = []
 
     for idx in confirmed_indexes:
         window_before = lines[max(0, idx - 40):idx]
-        teams = [x for x in window_before if x in VALID_TEAMS]
+        away_team, home_team = get_last_two_distinct_teams(window_before)
 
-        if not teams:
+        if not home_team:
             continue
 
-        team = teams[-1]
+        team = home_team
         lineup = extract_lineup(lines, idx)
 
         if len(lineup) != 9:
@@ -131,58 +213,82 @@ def parse_lineups(lines):
 
         parsed.append({
             "team": team,
+            "away_team": away_team,
+            "home_team": home_team,
+            "matchup": f"{away_team} @ {home_team}" if away_team and home_team else team,
             "lineup": lineup,
             "pitcher": pitcher
         })
 
     deduped = {}
     for item in parsed:
-        deduped[item["team"]] = item
+        key = f"{item.get('matchup', '')}|{item['team']}"
+        deduped[key] = item
 
     return list(deduped.values())
 
 
 def lineup_fingerprint(item):
-    raw = json.dumps(item, sort_keys=True)
+    raw = json.dumps(
+        {
+            "team": item["team"],
+            "away_team": item.get("away_team"),
+            "home_team": item.get("home_team"),
+            "lineup": item["lineup"],
+            "pitcher": item.get("pitcher")
+        },
+        sort_keys=True
+    )
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def format_team_message(item, is_update=False):
+def state_key(item):
+    return f"{item.get('matchup', item['team'])}|{item['team']}"
+
+
+def build_team_embed(item, is_update=False):
     team = item["team"]
     lineup = item["lineup"]
     pitcher = item.get("pitcher")
+    matchup = item.get("matchup", team)
     date_str = datetime.now(ET).strftime("%B %d, %Y")
 
-    if is_update:
-        header = f"🔄 **UPDATED {team} STARTING LINEUP**"
-    else:
-        header = f"📋 **{team} STARTING LINEUP**"
+    title = f"🔄 {team} Starting Lineup Updated" if is_update else f"📋 {team} Starting Lineup"
 
-    lines = []
-    lines.append(header)
-    lines.append(f"**Date:** {date_str}")
-    lines.append("")
+    description_lines = [
+        f"**Matchup:** {matchup}",
+        f"**Date:** {date_str}",
+        ""
+    ]
 
     if pitcher:
-        lines.append(f"**SP:** {pitcher}")
-        lines.append("")
+        description_lines.append(f"**SP:** {pitcher}")
+        description_lines.append("")
 
     for i, player in enumerate(lineup, start=1):
-        pos = player.get("pos", "")
-        name = player.get("name", "")
-        lines.append(f"**{i}.** {name} — {pos}")
+        description_lines.append(f"**{i}.** {player['name']} — {player['pos']}")
 
-    return "\n".join(lines).strip()
+    embed = {
+        "title": title,
+        "description": "\n".join(description_lines),
+        "color": TEAM_COLORS.get(team, 0x5865F2),
+        "footer": {"text": "Old ESPN Fantasy Baseball Boards"},
+        "timestamp": datetime.now(ET).isoformat()
+    }
+
+    logo_url = TEAM_LOGOS.get(team)
+    if logo_url:
+        embed["thumbnail"] = {"url": logo_url}
+
+    return embed
 
 
-def post_with_retries(content):
+def post_embed_with_retries(embed):
+    payload = {"embeds": [embed]}
+
     for attempt in range(6):
         try:
-            r = requests.post(
-                WEBHOOK_URL,
-                json={"content": content},
-                timeout=20
-            )
+            r = requests.post(WEBHOOK_URL, json=payload, timeout=20)
 
             if r.status_code == 429:
                 retry_after = 2
@@ -206,15 +312,10 @@ def post_with_retries(content):
             else:
                 raise
 
-    raise RuntimeError("Failed to post to Discord after retries")
+    raise RuntimeError("Failed to post embed to Discord after retries")
 
 
-def main():
-    if not WEBHOOK_URL:
-        raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
-
-    print(f"[BOT] Run started at {datetime.now(ET).strftime('%Y-%m-%d %I:%M:%S %p %Z')}")
-
+def run_once():
     today_key = datetime.now(ET).strftime("%Y-%m-%d")
     state = load_state()
 
@@ -229,22 +330,21 @@ def main():
     parsed = parse_lineups(lines)
 
     print(f"[BOT] Parsed {len(parsed)} valid lineups")
-
     if parsed:
         print(f"[BOT] Teams parsed: {', '.join(sorted(x['team'] for x in parsed))}")
 
     new_items = []
 
     for item in parsed:
-        team = item["team"]
+        key = state_key(item)
         fingerprint = lineup_fingerprint(item)
-        old_fingerprint = posted.get(team)
+        old_fingerprint = posted.get(key)
 
         if old_fingerprint == fingerprint:
-            print(f"[BOT] Skipping {team} (already posted, unchanged)")
+            print(f"[BOT] Skipping {key} (already posted, unchanged)")
             continue
 
-        print(f"[BOT] New or updated lineup found for {team}")
+        print(f"[BOT] New or updated lineup found for {key}")
         new_items.append(item)
 
     if not new_items:
@@ -253,16 +353,16 @@ def main():
 
     posted_this_run = 0
 
-    for item in sorted(new_items, key=lambda x: x["team"]):
-        team = item["team"]
-        is_update = team in posted
-        msg = format_team_message(item, is_update=is_update)
+    for item in sorted(new_items, key=lambda x: (x.get("matchup", ""), x["team"])):
+        key = state_key(item)
+        is_update = key in posted
+        embed = build_team_embed(item, is_update=is_update)
 
         try:
-            print(f"[BOT] Posting lineup for {team}")
-            post_with_retries(msg)
+            print(f"[BOT] Posting lineup for {key}")
+            post_embed_with_retries(embed)
 
-            posted[team] = lineup_fingerprint(item)
+            posted[key] = lineup_fingerprint(item)
             state["posted"] = posted
             save_state(state)
 
@@ -270,9 +370,26 @@ def main():
             time.sleep(1.25)
 
         except Exception as e:
-            print(f"[BOT] Failed posting {team}: {e}")
+            print(f"[BOT] Failed posting {key}: {e}")
 
     print(f"[BOT] Finished. Posted {posted_this_run} team lineups.")
+
+
+def main():
+    if not WEBHOOK_URL:
+        raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
+
+    print(f"[BOT] Worker started at {datetime.now(ET).strftime('%Y-%m-%d %I:%M:%S %p %Z')}")
+
+    while True:
+        try:
+            print(f"[BOT] Run started at {datetime.now(ET).strftime('%Y-%m-%d %I:%M:%S %p %Z')}")
+            run_once()
+        except Exception as e:
+            print(f"[BOT] Fatal cycle error: {e}")
+
+        print("[BOT] Sleeping 300 seconds")
+        time.sleep(300)
 
 
 if __name__ == "__main__":
