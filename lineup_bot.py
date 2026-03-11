@@ -22,7 +22,7 @@ VALID_TEAMS = {
 POSITIONS = {"C", "1B", "2B", "2B/SS", "3B", "SS", "LF", "CF", "RF", "DH"}
 
 BAD_VALUES = {
-    "RotoWire", "Alerts", "alert", "Menu", "Confirmed Lineup",
+    "RotoWire", "Alerts", "alert", "Menu", "Confirmed Lineup", "Expected Lineup",
     "L", "R", "S", "ERA", "MLB", "Baseball"
 }
 
@@ -175,6 +175,23 @@ def find_pitcher(lines, start_idx):
     return None
 
 
+def find_game_time(lines, start_idx):
+    window = lines[max(0, start_idx - 40):start_idx]
+
+    for text in window:
+        upper = text.upper()
+
+        if (
+            ("AM" in upper or "PM" in upper)
+            and ":" in text
+            and len(text) <= 25
+            and text not in BAD_VALUES
+        ):
+            return text
+
+    return None
+
+
 def get_last_two_distinct_teams(window_before):
     found = [x for x in window_before if x in VALID_TEAMS]
     distinct = []
@@ -193,10 +210,15 @@ def get_last_two_distinct_teams(window_before):
 
 
 def parse_lineups(lines):
-    confirmed_indexes = [i for i, x in enumerate(lines) if x == "Confirmed Lineup"]
+    lineup_indexes = [
+        (i, lines[i])
+        for i in range(len(lines))
+        if lines[i] in ("Confirmed Lineup", "Expected Lineup")
+    ]
+
     parsed = []
 
-    for idx in confirmed_indexes:
+    for idx, lineup_type in lineup_indexes:
         window_before = lines[max(0, idx - 40):idx]
         away_team, home_team = get_last_two_distinct_teams(window_before)
 
@@ -210,19 +232,22 @@ def parse_lineups(lines):
             continue
 
         pitcher = find_pitcher(lines, idx)
+        game_time = find_game_time(lines, idx)
 
         parsed.append({
             "team": team,
             "away_team": away_team,
             "home_team": home_team,
             "matchup": f"{away_team} @ {home_team}" if away_team and home_team else team,
+            "game_time": game_time,
             "lineup": lineup,
-            "pitcher": pitcher
+            "pitcher": pitcher,
+            "lineup_type": lineup_type
         })
 
     deduped = {}
     for item in parsed:
-        key = f"{item.get('matchup', '')}|{item['team']}"
+        key = f"{item.get('matchup', '')}|{item['team']}|{item.get('lineup_type', '')}"
         deduped[key] = item
 
     return list(deduped.values())
@@ -234,8 +259,10 @@ def lineup_fingerprint(item):
             "team": item["team"],
             "away_team": item.get("away_team"),
             "home_team": item.get("home_team"),
+            "game_time": item.get("game_time"),
             "lineup": item["lineup"],
-            "pitcher": item.get("pitcher")
+            "pitcher": item.get("pitcher"),
+            "lineup_type": item.get("lineup_type")
         },
         sort_keys=True
     )
@@ -251,15 +278,26 @@ def build_team_embed(item, is_update=False):
     lineup = item["lineup"]
     pitcher = item.get("pitcher")
     matchup = item.get("matchup", team)
+    game_time = item.get("game_time")
+    lineup_type = item.get("lineup_type", "Confirmed Lineup")
     date_str = datetime.now(ET).strftime("%B %d, %Y")
 
-    title = f"🔄 {team} Starting Lineup Updated" if is_update else f"📋 {team} Starting Lineup"
+    if lineup_type == "Expected Lineup":
+        title = f"👀 ⚾ {team} Expected Lineup"
+    elif is_update:
+        title = f"🔄 ⚾ {team} Starting Lineup Updated"
+    else:
+        title = f"⚾ {team} Confirmed Lineup"
 
     description_lines = [
         f"**Matchup:** {matchup}",
         f"**Date:** {date_str}",
-        ""
     ]
+
+    if game_time:
+        description_lines.append(f"**Game Time:** {game_time}")
+
+    description_lines.append("")
 
     if pitcher:
         description_lines.append(f"**SP:** {pitcher}")
@@ -330,8 +368,9 @@ def run_once():
     parsed = parse_lineups(lines)
 
     print(f"[BOT] Parsed {len(parsed)} valid lineups")
+
     if parsed:
-        print(f"[BOT] Teams parsed: {', '.join(sorted(x['team'] for x in parsed))}")
+        print(f"[BOT] Teams parsed: {', '.join(sorted({x['team'] for x in parsed}))}")
 
     new_items = []
 
@@ -355,7 +394,7 @@ def run_once():
 
     for item in sorted(new_items, key=lambda x: (x.get("matchup", ""), x["team"])):
         key = state_key(item)
-        is_update = key in posted
+        is_update = key in posted and item.get("lineup_type") != "Expected Lineup"
         embed = build_team_embed(item, is_update=is_update)
 
         try:
