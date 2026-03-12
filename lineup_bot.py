@@ -212,15 +212,16 @@ def parse_lineups(lines):
     ]
 
     parsed = []
+    matchup_counts = {}
 
     for idx, lineup_type in lineup_indexes:
         window_before = lines[max(0, idx - 40):idx]
         away_team, home_team = get_last_two_distinct_teams(window_before)
 
-        if not home_team:
+        if not away_team or not home_team:
             continue
 
-        team = home_team
+        matchup = f"{away_team} @ {home_team}"
         lineup = extract_lineup(lines, idx)
 
         if len(lineup) != 9:
@@ -229,7 +230,17 @@ def parse_lineups(lines):
         pitcher = find_pitcher(lines, idx)
         game_time = find_game_time(lines, idx)
         weather = find_weather(lines, idx)
-        matchup = f"{away_team} @ {home_team}" if away_team and home_team else team
+
+        seen_count = matchup_counts.get(matchup, 0)
+
+        if seen_count == 0:
+            team = away_team
+        elif seen_count == 1:
+            team = home_team
+        else:
+            continue
+
+        matchup_counts[matchup] = seen_count + 1
 
         parsed.append({
             "team": team,
