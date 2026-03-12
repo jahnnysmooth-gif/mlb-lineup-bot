@@ -9,18 +9,22 @@ import requests
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 STATE_FILE = "posted_lineups.json"
-ET = ZoneInfo("America/New_York")
-
 ROTOWIRE_API = "https://www.rotowire.com/daily/tables/mlb-lineups.php"
 
+ET = ZoneInfo("America/New_York")
+
+
 TEAM_COLORS = {
-    "ARI":0xA71930,"ATL":0xCE1141,"BAL":0xDF4601,"BOS":0xBD3039,"CHC":0x0E3386,
-    "CWS":0x27251F,"CIN":0xC6011F,"CLE":0xE31937,"COL":0x33006F,"DET":0x0C2340,
-    "HOU":0xEB6E1F,"KC":0x004687,"LAA":0xBA0021,"LAD":0x005A9C,"MIA":0x00A3E0,
-    "MIL":0x12284B,"MIN":0x002B5C,"NYM":0x002D72,"NYY":0x0C2340,"ATH":0x003831,
-    "PHI":0xE81828,"PIT":0xFDB827,"SD":0x2F241D,"SF":0xFD5A1E,"SEA":0x005C5C,
-    "STL":0xC41E3A,"TB":0x092C5C,"TEX":0x003278,"TOR":0x134A8E,"WSH":0xAB0003
+    "ARI":0xA71930,"ATL":0xCE1141,"BAL":0xDF4601,"BOS":0xBD3039,
+    "CHC":0x0E3386,"CWS":0x27251F,"CIN":0xC6011F,"CLE":0xE31937,
+    "COL":0x33006F,"DET":0x0C2340,"HOU":0xEB6E1F,"KC":0x004687,
+    "LAA":0xBA0021,"LAD":0x005A9C,"MIA":0x00A3E0,"MIL":0x12284B,
+    "MIN":0x002B5C,"NYM":0x002D72,"NYY":0x0C2340,"ATH":0x003831,
+    "PHI":0xE81828,"PIT":0xFDB827,"SD":0x2F241D,"SF":0xFD5A1E,
+    "SEA":0x005C5C,"STL":0xC41E3A,"TB":0x092C5C,"TEX":0x003278,
+    "TOR":0x134A8E,"WSH":0xAB0003
 }
+
 
 TEAM_LOGOS = {
 "ARI":"https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/ARI.svg",
@@ -60,7 +64,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             return json.load(f)
-    return {}
+    return {"posted":{}}
 
 
 def save_state(state):
@@ -68,14 +72,14 @@ def save_state(state):
         json.dump(state,f,indent=2)
 
 
-def fetch_rotowire_lineups():
+def fetch_lineups():
 
     try:
         r=requests.get(ROTOWIRE_API,timeout=20)
         r.raise_for_status()
         data=r.json()
     except Exception as e:
-        print(f"[BOT] API error: {e}")
+        print("[BOT] Rotowire API error:",e)
         return []
 
     parsed=[]
@@ -108,15 +112,15 @@ def fetch_rotowire_lineups():
                 "ballpark":game.get("park"),
                 "weather":game.get("weather"),
                 "rain":game.get("rain_percentage"),
-                "lineup":lineup,
                 "pitcher":game.get(f"{side}_pitcher"),
+                "lineup":lineup,
                 "lineup_type":"Confirmed Lineup" if game.get("confirmed") else "Expected Lineup"
             })
 
     return parsed
 
 
-def lineup_fingerprint(item):
+def fingerprint(item):
     raw=json.dumps(item,sort_keys=True)
     return hashlib.md5(raw.encode()).hexdigest()
 
@@ -124,15 +128,15 @@ def lineup_fingerprint(item):
 def build_embed(item,is_update=False):
 
     team=item["team"]
-    lineup=item["lineup"]
 
     matchup=item.get("matchup")
-    game_time=item.get("game_time")
-    ballpark=item.get("ballpark")
+    time_et=item.get("game_time")
+    park=item.get("ballpark")
     weather=item.get("weather")
     rain=item.get("rain")
     pitcher=item.get("pitcher")
 
+    lineup=item.get("lineup",[])
     lineup_type=item.get("lineup_type")
 
     date_str=datetime.now(ET).strftime("%B %d, %Y")
@@ -149,11 +153,11 @@ def build_embed(item,is_update=False):
         f"**Date:** {date_str}",
     ]
 
-    if game_time:
-        lines.append(f"**Game Time:** {game_time}")
+    if time_et:
+        lines.append(f"**Game Time:** {time_et}")
 
-    if ballpark:
-        lines.append(f"**Ballpark:** {ballpark}")
+    if park:
+        lines.append(f"**Ballpark:** {park}")
 
     if weather:
         lines.append(f"**Weather:** {weather}")
@@ -187,47 +191,69 @@ def build_embed(item,is_update=False):
 
 def post_embed(embed):
 
-    payload={"embeds":[embed]}
+    r=requests.post(
+        f"{WEBHOOK_URL}?wait=true",
+        json={"embeds":[embed]}
+    )
 
-    while True:
+    r.raise_for_status()
 
-        r=requests.post(WEBHOOK_URL,json=payload)
+    data=r.json()
 
-        if r.status_code==429:
-            retry=r.json().get("retry_after",2)
-            time.sleep(retry)
-            continue
+    return data["id"]
 
-        r.raise_for_status()
-        break
+
+def edit_embed(message_id,embed):
+
+    url=f"{WEBHOOK_URL}/messages/{message_id}"
+
+    r=requests.patch(url,json={"embeds":[embed]})
+
+    r.raise_for_status()
 
 
 def run_once():
 
     state=load_state()
-    posted=state.get("posted",{})
+    posted=state["posted"]
 
-    parsed=fetch_rotowire_lineups()
+    items=fetch_lineups()
 
-    print(f"[BOT] Parsed {len(parsed)} lineups")
+    print(f"[BOT] Parsed {len(items)} lineups")
 
-    for item in parsed:
+    for item in items:
 
         key=f"{item['matchup']}|{item['team']}"
-        fingerprint=lineup_fingerprint(item)
 
-        if posted.get(key)==fingerprint:
+        fp=fingerprint(item)
+
+        existing=posted.get(key)
+
+        if existing and existing["fingerprint"]==fp:
             continue
 
-        embed=build_embed(item,is_update=key in posted)
+        embed=build_embed(item,is_update=existing is not None)
 
-        print(f"[BOT] Posting {key}")
+        if existing:
 
-        post_embed(embed)
+            print(f"[BOT] Updating {key}")
 
-        posted[key]=fingerprint
+            edit_embed(existing["message_id"],embed)
 
-        save_state({"posted":posted})
+            posted[key]["fingerprint"]=fp
+
+        else:
+
+            print(f"[BOT] Posting {key}")
+
+            msg_id=post_embed(embed)
+
+            posted[key]={
+                "fingerprint":fp,
+                "message_id":msg_id
+            }
+
+        save_state(state)
 
         time.sleep(1)
 
