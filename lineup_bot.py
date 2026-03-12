@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import hashlib
@@ -24,8 +25,10 @@ POSITIONS = {"C", "1B", "2B", "2B/SS", "3B", "SS", "LF", "CF", "RF", "DH"}
 
 BAD_VALUES = {
     "RotoWire", "Alerts", "alert", "Menu", "Confirmed Lineup", "Expected Lineup",
-    "L", "R", "S", "ERA", "MLB", "Baseball"
+    "Unknown Lineup", "L", "R", "S", "ERA", "MLB", "Baseball"
 }
+
+LINEUP_TYPES = {"Confirmed Lineup", "Expected Lineup", "Unknown Lineup"}
 
 TEAM_COLORS = {
     "ARI": 0xA71930, "ATL": 0xCE1141, "BAL": 0xDF4601, "BOS": 0xBD3039,
@@ -71,6 +74,9 @@ TEAM_LOGOS = {
     "WSH": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/WSH.svg"
 }
 
+TIME_RE = re.compile(r"^\d{1,2}:\d{2} [AP]M ET$")
+WEATHER_HINT_RE = re.compile(r"(rain|precipitation|wind|mph|degrees|°)", re.IGNORECASE)
+
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -115,15 +121,39 @@ def get_lines(html):
     return [x for x in lines if x]
 
 
-def extract_lineup(lines, start_idx):
+def split_game_blocks(lines):
+    time_indexes = [i for i, line in enumerate(lines) if TIME_RE.match(line)]
+    blocks = []
+
+    for n, start_idx in enumerate(time_indexes):
+        end_idx = time_indexes[n + 1] if n + 1 < len(time_indexes) else len(lines)
+        game_time = lines[start_idx]
+        block = lines[start_idx:end_idx]
+        blocks.append((game_time, block))
+
+    return blocks
+
+
+def extract_lineup_from_block(block, start_idx):
     lineup = []
     i = start_idx + 1
 
-    while i < len(lines) and len(lineup) < 9:
-        token = lines[i]
+    while i < len(block) and len(lineup) < 9:
+        token = block[i]
 
-        if token in POSITIONS and i + 1 < len(lines):
-            player = lines[i + 1]
+        if token in LINEUP_TYPES:
+            break
+        if token.startswith("Umpire:"):
+            break
+        if token.startswith("LINE "):
+            break
+        if token.startswith("O/U"):
+            break
+        if TIME_RE.match(token):
+            break
+
+        if token in POSITIONS and i + 1 < len(block):
+            player = block[i + 1]
 
             if (
                 player
@@ -132,6 +162,8 @@ def extract_lineup(lines, start_idx):
                 and "$" not in player
                 and "ERA" not in player
                 and player not in VALID_TEAMS
+                and not player.startswith("The ")
+                and not player.startswith("Watch Now")
             ):
                 lineup.append({
                     "name": player,
@@ -145,8 +177,8 @@ def extract_lineup(lines, start_idx):
     return lineup
 
 
-def find_pitcher(lines, start_idx):
-    window = lines[max(0, start_idx - 25):start_idx]
+def find_pitcher_in_block(block, lineup_idx):
+    window = block[max(0, lineup_idx - 12):lineup_idx]
 
     for text in reversed(window):
         if (
@@ -154,95 +186,57 @@ def find_pitcher(lines, start_idx):
             and text not in VALID_TEAMS
             and "ERA" not in text
             and 2 <= len(text.split()) <= 4
+            and not text.startswith("Umpire:")
+            and not TIME_RE.match(text)
+            and "Watch Now" not in text
+            and "Tickets" not in text
         ):
             return text
 
     return None
 
 
-def find_game_time(lines, start_idx):
-    window = lines[max(0, start_idx - 40):start_idx]
-
-    for text in window:
-        upper = text.upper()
-        if (
-            ("AM" in upper or "PM" in upper)
-            and ":" in text
-            and len(text) <= 25
-            and text not in BAD_VALUES
-        ):
+def find_weather_in_block(block):
+    for text in block:
+        if WEATHER_HINT_RE.search(text):
             return text
-
     return None
 
 
-def find_weather(lines, start_idx):
-    window = lines[max(0, start_idx - 40):start_idx]
-
-    for text in window:
-        lower = text.lower()
-        if any(word in lower for word in ["rain", "wind", "temp", "weather", "mph", "degrees"]):
-            return text
-
-    return None
-
-
-def get_last_two_distinct_teams(window_before):
-    found = [x for x in window_before if x in VALID_TEAMS]
-    distinct = []
-
-    for team in found:
-        if not distinct or distinct[-1] != team:
-            distinct.append(team)
-
-    if len(distinct) >= 2:
-        return distinct[-2], distinct[-1]
-
-    if len(distinct) == 1:
-        return distinct[0], None
-
+def find_teams_in_block(block):
+    teams = []
+    for text in block:
+        if text in VALID_TEAMS:
+            teams.append(text)
+            if len(teams) == 2:
+                return teams[0], teams[1]
     return None, None
 
 
-def parse_lineups(lines):
-    lineup_indexes = [
-        (i, lines[i])
-        for i in range(len(lines))
-        if lines[i] in ("Confirmed Lineup", "Expected Lineup")
-    ]
+def parse_game_block(game_time, block):
+    away_team, home_team = find_teams_in_block(block)
+    if not away_team or not home_team:
+        return []
 
-    parsed = []
-    matchup_counts = {}
+    matchup = f"{away_team} @ {home_team}"
+    weather = find_weather_in_block(block)
 
-    for idx, lineup_type in lineup_indexes:
-        window_before = lines[max(0, idx - 40):idx]
-        away_team, home_team = get_last_two_distinct_teams(window_before)
+    lineup_markers = [(i, text) for i, text in enumerate(block) if text in LINEUP_TYPES]
+    results = []
 
-        if not away_team or not home_team:
+    for marker_num, (idx, lineup_type) in enumerate(lineup_markers[:2]):
+        if lineup_type == "Unknown Lineup":
             continue
 
-        matchup = f"{away_team} @ {home_team}"
-        lineup = extract_lineup(lines, idx)
+        team = away_team if marker_num == 0 else home_team
+        lineup = extract_lineup_from_block(block, idx)
 
         if len(lineup) != 9:
             continue
 
-        pitcher = find_pitcher(lines, idx)
-        game_time = find_game_time(lines, idx)
-        weather = find_weather(lines, idx)
+        pitcher = find_pitcher_in_block(block, idx)
 
-        seen_count = matchup_counts.get(matchup, 0)
-
-        if seen_count == 0:
-            team = away_team
-        elif seen_count == 1:
-            team = home_team
-        else:
-            continue
-
-        matchup_counts[matchup] = seen_count + 1
-
-        parsed.append({
+        results.append({
             "team": team,
             "matchup": matchup,
             "game_time": game_time,
@@ -254,8 +248,17 @@ def parse_lineups(lines):
             "lineup_type": lineup_type
         })
 
+    return results
+
+
+def parse_lineups(lines):
+    items = []
+
+    for game_time, block in split_game_blocks(lines):
+        items.extend(parse_game_block(game_time, block))
+
     deduped = {}
-    for item in parsed:
+    for item in items:
         key = f"{item['matchup']}|{item['team']}"
         deduped[key] = item
 
@@ -339,13 +342,17 @@ def post_embed(embed):
                 timeout=20
             )
 
-            if r.status_code == 429:
+            if r.status_code in (429, 500, 502, 503, 504):
                 retry_after = 2
                 try:
                     retry_after = float(r.json().get("retry_after", 2))
                 except Exception:
                     pass
-                print(f"[BOT] Rate limited on post. Sleeping {retry_after}s", flush=True)
+                print(
+                    f"[BOT] Discord temporary error {r.status_code}. "
+                    f"Retrying in {retry_after}s (attempt {attempt + 1}/6)",
+                    flush=True
+                )
                 time.sleep(retry_after)
                 continue
 
@@ -373,13 +380,17 @@ def edit_embed(message_id, embed):
                 timeout=20
             )
 
-            if r.status_code == 429:
+            if r.status_code in (429, 500, 502, 503, 504):
                 retry_after = 2
                 try:
                     retry_after = float(r.json().get("retry_after", 2))
                 except Exception:
                     pass
-                print(f"[BOT] Rate limited on edit. Sleeping {retry_after}s", flush=True)
+                print(
+                    f"[BOT] Discord temporary error {r.status_code} on edit. "
+                    f"Retrying in {retry_after}s (attempt {attempt + 1}/6)",
+                    flush=True
+                )
                 time.sleep(retry_after)
                 continue
 
