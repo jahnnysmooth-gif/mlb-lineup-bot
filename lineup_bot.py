@@ -2,17 +2,25 @@ import os
 import re
 import json
 import time
+import asyncio
 import hashlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
+import discord
 import requests
 from bs4 import BeautifulSoup
 
-WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-STATE_FILE = "posted_lineups.json"
-LINEUPS_URL = "https://www.rotowire.com/baseball/daily-lineups.php"
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))
 
+STATE_DIR = Path("state")
+STATE_FILE = STATE_DIR / "posted_lineups.json"
+STATE_FILE_TMP = STATE_DIR / "posted_lineups.json.tmp"
+
+LINEUPS_URL = "https://www.rotowire.com/baseball/daily-lineups.php"
 ET = ZoneInfo("America/New_York")
 
 VALID_TEAMS = {
@@ -42,57 +50,72 @@ TEAM_COLORS = {
 }
 
 TEAM_LOGOS = {
-    "ARI": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/ARI.svg",
-    "ATL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/ATL.svg",
-    "BAL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/BAL.svg",
-    "BOS": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/BOS.svg",
-    "CHC": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CHC.svg",
-    "CWS": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CWS.svg",
-    "CIN": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CIN.svg",
-    "CLE": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/CLE.svg",
-    "COL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/COL.svg",
-    "DET": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/DET.svg",
-    "HOU": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/HOU.svg",
-    "KC": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/KC.svg",
-    "LAA": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/LAA.svg",
-    "LAD": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/LAD.svg",
-    "MIA": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/MIA.svg",
-    "MIL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/MIL.svg",
-    "MIN": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/MIN.svg",
-    "NYM": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/NYM.svg",
-    "NYY": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/NYY.svg",
-    "ATH": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/OAK.svg",
-    "PHI": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/PHI.svg",
-    "PIT": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/PIT.svg",
-    "SD": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/SD.svg",
-    "SF": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/SF.svg",
-    "SEA": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/SEA.svg",
-    "STL": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/STL.svg",
-    "TB": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/TB.svg",
-    "TEX": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/TEX.svg",
-    "TOR": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/TOR.svg",
-    "WSH": "https://raw.githubusercontent.com/mlb-logos/mlb-logos/main/WSH.svg"
+    "ARI": "https://a.espncdn.com/i/teamlogos/mlb/500/ari.png",
+    "ATH": "https://a.espncdn.com/i/teamlogos/mlb/500/oak.png",
+    "ATL": "https://a.espncdn.com/i/teamlogos/mlb/500/atl.png",
+    "BAL": "https://a.espncdn.com/i/teamlogos/mlb/500/bal.png",
+    "BOS": "https://a.espncdn.com/i/teamlogos/mlb/500/bos.png",
+    "CHC": "https://a.espncdn.com/i/teamlogos/mlb/500/chc.png",
+    "CWS": "https://a.espncdn.com/i/teamlogos/mlb/500/chw.png",
+    "CIN": "https://a.espncdn.com/i/teamlogos/mlb/500/cin.png",
+    "CLE": "https://a.espncdn.com/i/teamlogos/mlb/500/cle.png",
+    "COL": "https://a.espncdn.com/i/teamlogos/mlb/500/col.png",
+    "DET": "https://a.espncdn.com/i/teamlogos/mlb/500/det.png",
+    "HOU": "https://a.espncdn.com/i/teamlogos/mlb/500/hou.png",
+    "KC": "https://a.espncdn.com/i/teamlogos/mlb/500/kc.png",
+    "LAA": "https://a.espncdn.com/i/teamlogos/mlb/500/laa.png",
+    "LAD": "https://a.espncdn.com/i/teamlogos/mlb/500/lad.png",
+    "MIA": "https://a.espncdn.com/i/teamlogos/mlb/500/mia.png",
+    "MIL": "https://a.espncdn.com/i/teamlogos/mlb/500/mil.png",
+    "MIN": "https://a.espncdn.com/i/teamlogos/mlb/500/min.png",
+    "NYM": "https://a.espncdn.com/i/teamlogos/mlb/500/nym.png",
+    "NYY": "https://a.espncdn.com/i/teamlogos/mlb/500/nyy.png",
+    "PHI": "https://a.espncdn.com/i/teamlogos/mlb/500/phi.png",
+    "PIT": "https://a.espncdn.com/i/teamlogos/mlb/500/pit.png",
+    "SD": "https://a.espncdn.com/i/teamlogos/mlb/500/sd.png",
+    "SF": "https://a.espncdn.com/i/teamlogos/mlb/500/sf.png",
+    "SEA": "https://a.espncdn.com/i/teamlogos/mlb/500/sea.png",
+    "STL": "https://a.espncdn.com/i/teamlogos/mlb/500/stl.png",
+    "TB": "https://a.espncdn.com/i/teamlogos/mlb/500/tb.png",
+    "TEX": "https://a.espncdn.com/i/teamlogos/mlb/500/tex.png",
+    "TOR": "https://a.espncdn.com/i/teamlogos/mlb/500/tor.png",
+    "WSH": "https://a.espncdn.com/i/teamlogos/mlb/500/wsh.png",
 }
 
 TIME_RE = re.compile(r"^\d{1,2}:\d{2} [AP]M ET$")
 WEATHER_HINT_RE = re.compile(r"(rain|precipitation|wind|mph|degrees|°)", re.IGNORECASE)
 
 
+def log(msg: str) -> None:
+    print(f"[BOT] {msg}", flush=True)
+
+
 def load_state():
-    if os.path.exists(STATE_FILE):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if STATE_FILE.exists():
         try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            posted = data.get("posted", {})
+            if not isinstance(posted, dict):
+                posted = {}
+
+            return {"posted": posted}
         except Exception as e:
-            print(f"[BOT] Failed to load state: {e}", flush=True)
+            log(f"Failed to load state: {e}")
+
     return {"posted": {}}
 
 
 def save_state(state):
-    tmp_file = STATE_FILE + ".tmp"
-    with open(tmp_file, "w") as f:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(STATE_FILE_TMP, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
-    os.replace(tmp_file, STATE_FILE)
+
+    STATE_FILE_TMP.replace(STATE_FILE)
 
 
 def within_run_window():
@@ -103,10 +126,10 @@ def within_run_window():
 
 
 def fetch_page():
-    print("[BOT] Fetching RotoWire page...", flush=True)
+    log("Fetching RotoWire page...")
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(LINEUPS_URL, headers=headers, timeout=30)
-    print(f"[BOT] RotoWire status: {r.status_code}", flush=True)
+    log(f"RotoWire status: {r.status_code}")
     r.raise_for_status()
     return r.text
 
@@ -266,7 +289,9 @@ def parse_lineups(lines):
 
 
 def fingerprint(item):
-    raw = json.dumps(item, sort_keys=True)
+    enriched = dict(item)
+    enriched["logo"] = TEAM_LOGOS.get(item["team"])
+    raw = json.dumps(enriched, sort_keys=True)
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
@@ -280,6 +305,7 @@ def build_embed(item, is_update=False):
     pitcher = item.get("pitcher")
     lineup = item.get("lineup", [])
     lineup_type = item.get("lineup_type")
+    logo = TEAM_LOGOS.get(team)
 
     date_str = datetime.now(ET).strftime("%B %d, %Y")
 
@@ -318,96 +344,41 @@ def build_embed(item, is_update=False):
         pos = p.get("pos", "")
         lines.append(f"**{i}.** {name} — {pos}")
 
-    embed = {
-        "title": title,
-        "description": "\n".join(lines),
-        "color": TEAM_COLORS.get(team, 0x5865F2),
-        "timestamp": datetime.now(ET).isoformat(),
-        "footer": {"text": "Old ESPN Fantasy Baseball Boards"}
-    }
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(lines),
+        color=TEAM_COLORS.get(team, 0x5865F2),
+        timestamp=datetime.now(ET)
+    )
 
-    logo = TEAM_LOGOS.get(team)
     if logo:
-        embed["thumbnail"] = {"url": logo}
+        embed.set_thumbnail(url=logo)
 
+    embed.set_footer(text="Old ESPN Fantasy Baseball Boards")
     return embed
 
 
-def post_embed(embed):
-    for attempt in range(6):
-        try:
-            r = requests.post(
-                f"{WEBHOOK_URL}?wait=true",
-                json={"embeds": [embed]},
-                timeout=20
-            )
-
-            if r.status_code in (429, 500, 502, 503, 504):
-                retry_after = 2
-                try:
-                    retry_after = float(r.json().get("retry_after", 2))
-                except Exception:
-                    pass
-                print(
-                    f"[BOT] Discord temporary error {r.status_code}. "
-                    f"Retrying in {retry_after}s (attempt {attempt + 1}/6)",
-                    flush=True
-                )
-                time.sleep(retry_after)
-                continue
-
-            r.raise_for_status()
-            return r.json()["id"]
-
-        except requests.RequestException as e:
-            print(f"[BOT] Post error: {e}", flush=True)
-            if attempt < 5:
-                time.sleep(3)
-            else:
-                raise
-
-    raise RuntimeError("Failed to post embed after retries")
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
+background_task_started = False
 
 
-def edit_embed(message_id, embed):
-    url = f"{WEBHOOK_URL}/messages/{message_id}"
-
-    for attempt in range(6):
-        try:
-            r = requests.patch(
-                url,
-                json={"embeds": [embed]},
-                timeout=20
-            )
-
-            if r.status_code in (429, 500, 502, 503, 504):
-                retry_after = 2
-                try:
-                    retry_after = float(r.json().get("retry_after", 2))
-                except Exception:
-                    pass
-                print(
-                    f"[BOT] Discord temporary error {r.status_code} on edit. "
-                    f"Retrying in {retry_after}s (attempt {attempt + 1}/6)",
-                    flush=True
-                )
-                time.sleep(retry_after)
-                continue
-
-            r.raise_for_status()
-            return
-
-        except requests.RequestException as e:
-            print(f"[BOT] Edit error: {e}", flush=True)
-            if attempt < 5:
-                time.sleep(3)
-            else:
-                raise
-
-    raise RuntimeError("Failed to edit embed after retries")
+async def post_new_embed(channel, embed):
+    message = await channel.send(embed=embed)
+    return message.id
 
 
-def run_once():
+async def edit_existing_embed(channel, message_id, embed):
+    message = channel.get_partial_message(message_id)
+    await message.edit(embed=embed)
+
+
+async def run_once():
+    channel = client.get_channel(CHANNEL_ID)
+    if channel is None:
+        log("Channel not found.")
+        return
+
     state = load_state()
     posted = state.get("posted", {})
 
@@ -415,7 +386,7 @@ def run_once():
     lines = get_lines(html)
     items = parse_lineups(lines)
 
-    print(f"[BOT] Parsed {len(items)} lineups", flush=True)
+    log(f"Parsed {len(items)} lineups")
 
     for item in items:
         key = f"{item['matchup']}|{item['team']}"
@@ -423,50 +394,71 @@ def run_once():
         existing = posted.get(key)
 
         if existing and existing.get("fingerprint") == fp:
-            print(f"[BOT] Skipping unchanged {key}", flush=True)
+            log(f"Skipping unchanged {key}")
             continue
 
         embed = build_embed(item, is_update=existing is not None)
 
-        if existing:
-            print(f"[BOT] Updating {key}", flush=True)
-            edit_embed(existing["message_id"], embed)
-            posted[key]["fingerprint"] = fp
-        else:
-            print(f"[BOT] Posting {key}", flush=True)
-            msg_id = post_embed(embed)
-            posted[key] = {
-                "fingerprint": fp,
-                "message_id": msg_id
-            }
+        try:
+            if existing:
+                log(f"Updating {key}")
+                await edit_existing_embed(channel, existing["message_id"], embed)
+                posted[key]["fingerprint"] = fp
+            else:
+                log(f"Posting {key}")
+                msg_id = await post_new_embed(channel, embed)
+                posted[key] = {
+                    "fingerprint": fp,
+                    "message_id": msg_id
+                }
 
-        save_state(state)
-        time.sleep(1)
+            save_state(state)
+            await asyncio.sleep(1)
+
+        except Exception as e:
+            log(f"Failed on {key}: {e}")
 
 
-def main():
-    if not WEBHOOK_URL:
-        raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
+async def background_loop():
+    await client.wait_until_ready()
+    log("Lineup bot started")
 
-    print("[BOT] Worker started", flush=True)
-
-    while True:
+    while not client.is_closed():
         now_str = datetime.now(ET).strftime("%Y-%m-%d %I:%M:%S %p %Z")
-        print(f"[BOT] Run started at {now_str}", flush=True)
+        log(f"Run started at {now_str}")
 
         if not within_run_window():
-            print("[BOT] Outside run window (10AM–11PM ET). Sleeping 10 minutes.", flush=True)
-            time.sleep(600)
+            log("Outside run window (10AM–11PM ET). Sleeping 10 minutes.")
+            await asyncio.sleep(600)
             continue
 
         try:
-            run_once()
+            await run_once()
         except Exception as e:
-            print(f"[BOT] Error: {e}", flush=True)
+            log(f"Error: {e}")
 
-        print("[BOT] Sleeping 300 seconds", flush=True)
-        time.sleep(300)
+        log(f"Sleeping {POLL_INTERVAL} seconds")
+        await asyncio.sleep(POLL_INTERVAL)
+
+
+@client.event
+async def on_ready():
+    global background_task_started
+    log(f"Logged in as {client.user}")
+
+    if not background_task_started:
+        background_task_started = True
+        asyncio.create_task(background_loop())
+
+
+async def main():
+    if not DISCORD_TOKEN:
+        raise RuntimeError("DISCORD_TOKEN is not set")
+    if not CHANNEL_ID:
+        raise RuntimeError("CHANNEL_ID is not set")
+
+    await client.start(DISCORD_TOKEN)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
